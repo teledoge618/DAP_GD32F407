@@ -1,0 +1,7 @@
+/tool
+
+/build
+
+/doc/*
+!/doc/dap_gd32f407.pdf
+!/doc/GD32F407VE_pinout.xlsx

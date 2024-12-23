@@ -1,0 +1,24 @@
+{
+    "cmake.options.advanced": {
+        "build": {
+            "statusBarVisibility": "inherit",
+            "inheritDefault": "visible"
+        },
+        "launch": {
+            "statusBarVisibility": "inherit",
+            "inheritDefault": "visible"
+        },
+        "debug": {
+            "statusBarVisibility": "inherit",
+            "inheritDefault": "visible"
+        }
+    },
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "files.associations": {
+        "gd32f4xx_libopt.h": "c",
+        "app_usb.h": "c",
+        "ulog.h": "c",
+        "dap_port.h": "c",
+        "app_adc.h": "c"
+    },
+}
