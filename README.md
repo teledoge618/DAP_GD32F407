@@ -32,3 +32,10 @@
 - CMake > 生成
 - 找到./build/source/app/app.hex
 - 使用pyocd或openocd下载到芯片
+
+# 库引用
+
+- CMSIS_5 https://github.com/ARM-software/CMSIS_5
+- CherryUSB https://github.com/cherry-embedded/CherryUSB
+- printf https://github.com/mpaland/printf
+- GD32_LIB
