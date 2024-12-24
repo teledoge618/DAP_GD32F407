@@ -6,7 +6,7 @@ _estack = ORIGIN(RAM) + LENGTH(RAM); /* end of RAM */
 
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size  = 1024;     /* required amount of heap  */
-_Min_Stack_Size = 4096;     /* required amount of stack */
+_Min_Stack_Size = 8192;     /* required amount of stack */
 
 /* Specify the memory areas */
 MEMORY

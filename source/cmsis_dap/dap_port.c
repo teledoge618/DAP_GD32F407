@@ -103,8 +103,16 @@ static const uint8_t parity_mapping_table[256] = {
 #define DMA1_CH0_DISABLE() (BIT_BAND_PERIPH((((DMA1) + 0x10U) + 0x18U * (DMA_CH0)), 0) = 0x00)
 #define DMA1_CH0_IS_ENABLE() BIT_BAND_PERIPH((((DMA1) + 0x10U) + 0x18U * (DMA_CH0)), 0)
 
+/* GPIO */
+#define TMS_OEN_SET() (BIT_BAND_PERIPH(((GPIOD) + 0x18U), 12) = 0x01)
+#define TMS_OEN_RESET() (BIT_BAND_PERIPH(((GPIOD) + 0x18U), 12 + 16) = 0x00) /* 高位清零 */
+#define TMS_OEN() (BIT_BAND_PERIPH(((GPIOD) + 0x14U), 12))
+
 /* TMS传输方向控制 */
 static void TmsOen(bool bit_enable) {
+#if 1
+    TMS_OEN() = bit_enable;
+#else
     if (bit_enable) {
         gpio_bit_set(GPIOD, GPIO_PIN_12);
         /* TMS_CTL */
@@ -115,6 +123,7 @@ static void TmsOen(bool bit_enable) {
 
         gpio_mode_set(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO_PIN_6);
     }
+#endif
 }
 
 /* TMS_OEN复用模式控制  1自动 0手动 */
@@ -144,11 +153,15 @@ static void TmsAfMode(bool bit_enable) {
 
 /* TMS写 */
 static void TmsWrite(bool bit_out) {
+#if 1
+    gpio_bit_write(GPIOA, GPIO_PIN_6, bit_out);
+#else
     if (bit_out) {
         gpio_bit_set(GPIOA, GPIO_PIN_6);
     } else {
         gpio_bit_reset(GPIOA, GPIO_PIN_6);
     }
+#endif
 }
 
 /* TMS读 */
@@ -871,7 +884,7 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     T3_DISABLE();
     T0_UP_FLAG_CLEAR();
 
-    while (!SPI0_RBNE()) { /* 等待SPI数据 */
+    while (!SPI0_RBNE()) { /* 等待SPI数据清空 */
     }
 
     uint8_t ack = 0x07 & (spi_i2s_data_receive(SPI0) >> dap_data.swd_conf.turnaround); /* ACK[0:2] */
@@ -898,7 +911,9 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     /* data *******************************************************************/
 
     if (need_data_phase) {
-        uint8_t wdata_parity = 0;
+        /* WDATA校验值 */
+        uint8_t wdata_parity = 0x01 & (parity_mapping_table[response[0]] + parity_mapping_table[response[1]]  //
+                                       + parity_mapping_table[response[2]] + parity_mapping_table[response[3]]);
 
         if (read_n_write) {
             /* read */
@@ -913,9 +928,8 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
             SPI0_DMA_RX_ENABLE(); /* RX */
         } else {
             /* write */
-            wdata_parity = 0x01 & (parity_mapping_table[response[0]] + parity_mapping_table[response[1]] + parity_mapping_table[response[2]] + parity_mapping_table[response[3]]);
-
             TmsOen(1);
+
             dma_memory_address_config(DMA1, DMA_CH5, DMA_MEMORY_0, (uint32_t)response);
             dma_transfer_number_config(DMA1, DMA_CH5, 4); /* SPI0 */
             DMA1_CH5_ENABLE();
