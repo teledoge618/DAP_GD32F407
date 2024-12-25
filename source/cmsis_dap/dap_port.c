@@ -105,8 +105,11 @@ static const uint8_t parity_mapping_table[256] = {
 
 /* GPIO */
 #define TMS_OEN_SET() (BIT_BAND_PERIPH(((GPIOD) + 0x18U), 12) = 0x01)
-#define TMS_OEN_RESET() (BIT_BAND_PERIPH(((GPIOD) + 0x18U), 12 + 16) = 0x00) /* 高位清零 */
+#define TMS_OEN_RESET() (BIT_BAND_PERIPH(((GPIOD) + 0x18U), 12 + 16) = 0x01) /* 高位清零 */
 #define TMS_OEN() (BIT_BAND_PERIPH(((GPIOD) + 0x14U), 12))
+#define TMS_SET() (BIT_BAND_PERIPH(((GPIOA) + 0x18U), 6) = 0x01)
+#define TMS_RESET() (BIT_BAND_PERIPH(((GPIOA) + 0x18U), 6 + 16) = 0x01) /* 高位清零 */
+#define TMS() (BIT_BAND_PERIPH(((GPIOA) + 0x14U), 6))
 
 /* TMS传输方向控制 */
 static void TmsOen(bool bit_enable) {
@@ -154,7 +157,7 @@ static void TmsAfMode(bool bit_enable) {
 /* TMS写 */
 static void TmsWrite(bool bit_out) {
 #if 1
-    gpio_bit_write(GPIOA, GPIO_PIN_6, bit_out);
+    TMS() = bit_out;
 #else
     if (bit_out) {
         gpio_bit_set(GPIOA, GPIO_PIN_6);
@@ -277,7 +280,7 @@ void DAP_Port_InitHardware(void) {
     timer_master_output_trigger_source_select(TIMER0, TIMER_TRI_OUT_SRC_ENABLE); /* 输出使能信号 */
     timer_master_slave_mode_config(TIMER0, TIMER_MASTER_SLAVE_MODE_ENABLE);
     // timer_interrupt_enable(TIMER0, TIMER_INT_UP);
-    // nvic_irq_enable(TIMER0_UP_TIMER9_IRQn, 0, 1);
+    // nvic_irq_enable(TIMER0_UP_TIMER9_IRQn, 0, 0); /* 中断太慢 */
 
     /* TIMER3 */
     timer_deinit(TIMER3);
@@ -701,13 +704,16 @@ void DAP_Port_SWJ_Sequence(uint32_t count, uint8_t *value) {
         DMA1_CH5_ENABLE();    /* SPI0 */
         SPI0_DMA_TX_ENABLE(); /* 发送 */
         SPI0_ENABLE();        /* 填充tx buffer */
-        T3_ENABLE();          /* 从 */
-        T0_ENABLE();          /* 主 */
+
+        __set_BASEPRI(0x04);
+        T3_ENABLE(); /* 从 */
+        T0_ENABLE(); /* 主 */
         while (T0_IS_ENABLE()) {
         }
 
         T3_DISABLE();
-        T0_UP_FLAG_CLEAR();
+        __set_BASEPRI(0x00);
+        // T0_UP_FLAG_CLEAR();
         SPI0_DMA_TX_DISABLE();
         SPI0_DISABLE();
     }
@@ -728,13 +734,16 @@ void DAP_Port_SWJ_Sequence(uint32_t count, uint8_t *value) {
 
     spi_i2s_data_transmit(SPI0, *value); /* SPI0 */
     SPI0_ENABLE();
+
+    __set_BASEPRI(0x04);
     T3_ENABLE(); /* 从 */
     T0_ENABLE(); /* 主 */
     while (T0_IS_ENABLE()) {
     }
 
     T3_DISABLE();
-    T0_UP_FLAG_CLEAR();
+    __set_BASEPRI(0x00);
+    // T0_UP_FLAG_CLEAR();
     SPI0_DISABLE();
 }
 
@@ -795,13 +804,15 @@ void DAP_Port_SWD_Sequence(uint8_t info, const uint8_t *request, uint8_t *respon
             request++;
         }
 
+        __set_BASEPRI(0x04);
         T3_ENABLE(); /* 从 */
         T0_ENABLE(); /* 主 */
         while (T0_IS_ENABLE()) {
         }
 
         T3_DISABLE();
-        T0_UP_FLAG_CLEAR();
+        __set_BASEPRI(0x00);
+        // T0_UP_FLAG_CLEAR();
 
         if (!dir_out) {
             while (!SPI0_RBNE()) { /* 等待SPI数据 */
@@ -838,18 +849,20 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, 0xFFFFFFFF);
     timer_repetition_value_config(TIMER0, 8 - 1); /* 时钟周期数 */
     T0_SOFT_UPDATE();                             /* 手动更新进去 */
-    T0_UP_FLAG_CLEAR();
+    // T0_UP_FLAG_CLEAR();
     SPI0_ENABLE();
     SPI0_INT_RBNE_ENABLE();           /* 抛弃接收的数据 */
     spi_i2s_data_transmit(SPI0, req); /* SPI0 */
 
+    __set_BASEPRI(0x04);
     T3_ENABLE(); /* 从 */
     T0_ENABLE(); /* 主 */
     while (T0_IS_ENABLE()) {
     }
 
     T3_DISABLE();
-    T0_UP_FLAG_CLEAR();
+    __set_BASEPRI(0x00);
+    // T0_UP_FLAG_CLEAR();
 
     /* ACK ********************************************************************/
 
@@ -871,18 +884,20 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, cnt);
     timer_repetition_value_config(TIMER0, 8 - 1); /* 时钟周期数 */
     T0_SOFT_UPDATE();                             /* 手动更新进去 */
-    T0_UP_FLAG_CLEAR();
+    // T0_UP_FLAG_CLEAR();
 
     SPI0_ENABLE();
     SPI0_INT_RBNE_DISABLE(); /* 手动接收 */
 
+    __set_BASEPRI(0x04);
     T3_ENABLE(); /* 从 */
     T0_ENABLE(); /* 主 */
     while (T0_IS_ENABLE()) {
     }
 
     T3_DISABLE();
-    T0_UP_FLAG_CLEAR();
+    __set_BASEPRI(0x00);
+    // T0_UP_FLAG_CLEAR();
 
     while (!SPI0_RBNE()) { /* 等待SPI数据清空 */
     }
@@ -939,16 +954,18 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         SPI0_ENABLE();
         timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, 0xFFFF);
         timer_repetition_value_config(TIMER0, (4 * 8) - 1); /* 32bit */
-        T0_SOFT_UPDATE();                                   /* 手动更新进去 */
-        T0_UP_FLAG_CLEAR();
+        T0_SOFT_UPDATE();
+        // T0_UP_FLAG_CLEAR();
 
+        __set_BASEPRI(0x04);
         T3_ENABLE();
         T0_ENABLE(); /* 数据阶段 */
         while (T0_IS_ENABLE()) {
         }
 
         T3_DISABLE();
-        T0_UP_FLAG_CLEAR();
+        __set_BASEPRI(0x00);
+        // T0_UP_FLAG_CLEAR();
 
         if (read_n_write) {
             while (DMA1_CH0_IS_ENABLE()) {
@@ -970,20 +987,22 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         cnt = swj_timer0_cnt * (dap_data.swd_conf.turnaround * read_n_write + 1U) + swj_timer0_cnt / 4;
         timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, cnt);
         timer_repetition_value_config(TIMER0, 8 - 1); /* 时钟周期数 */
-        T0_SOFT_UPDATE();                             /* 手动更新进去 */
-        T0_UP_FLAG_CLEAR();
+        T0_SOFT_UPDATE();
+        // T0_UP_FLAG_CLEAR();
 
         SPI0_ENABLE();
         SPI0_INT_RBNE_DISABLE();
         spi_i2s_data_transmit(SPI0, wdata_parity); /* 读取时无效 */
 
+        __set_BASEPRI(0x04);
         T3_ENABLE();
         T0_ENABLE();
         while (T0_IS_ENABLE()) {
         }
 
         T3_DISABLE();
-        T0_UP_FLAG_CLEAR();
+        __set_BASEPRI(0x00);
+        // T0_UP_FLAG_CLEAR();
 
         while (!SPI0_RBNE()) { /* 等待SPI数据 */
         }
@@ -1002,6 +1021,7 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
 
         SPI0_INT_RBNE_ENABLE();
         TmsOen(1); /* 恢复控制权 */
+        SPI0_DISABLE();
 
         /* 写指令后需要添加空闲周期 */
         if ((!read_n_write) && (dap_data.transfer.idle_cycles > 0)) {
@@ -1022,41 +1042,43 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
 
                 timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, cnt);
                 timer_repetition_value_config(TIMER0, 8 - 1); /* 时钟周期数 */
-                T0_SOFT_UPDATE();                             /* 手动更新进去 */
-                T0_UP_FLAG_CLEAR();
+                T0_SOFT_UPDATE();
+                // T0_UP_FLAG_CLEAR();
 
+                __set_BASEPRI(0x04);
                 T3_ENABLE();
                 T0_ENABLE();
                 while (T0_IS_ENABLE()) {
                 }
 
                 T3_DISABLE();
-                T0_UP_FLAG_CLEAR();
+                __set_BASEPRI(0x00);
+                // T0_UP_FLAG_CLEAR();
             }
 
             TmsWrite(1);
             TmsAfMode(1); /* SPI控制 */
         }
     } else {
-        SPI0_DISABLE();
         if (read_n_write) {
             /* 读操作失败添加一个trn周期，重新掌握数据线控制权 */
             cnt = swj_timer0_cnt * dap_data.swd_conf.turnaround + swj_timer0_cnt / 4;
             timer_channel_output_pulse_value_config(TIMER3, TIMER_CH_1, cnt);
-            timer_repetition_value_config(TIMER0, 8 - 1); /* 时钟周期数 */
-            T0_SOFT_UPDATE();                             /* 手动更新进去 */
-            T0_UP_FLAG_CLEAR();
+            timer_repetition_value_config(TIMER0, 8 - 1);
+            T0_SOFT_UPDATE();
+            // T0_UP_FLAG_CLEAR();
 
+            __set_BASEPRI(0x04);
             T3_ENABLE();
             T0_ENABLE();
             while (T0_IS_ENABLE()) {
             }
 
             T3_DISABLE();
-            T0_UP_FLAG_CLEAR();
+            __set_BASEPRI(0x00);
+            // T0_UP_FLAG_CLEAR();
         }
     }
-    SPI0_DISABLE();
 
     TmsOen(1);
     return ack;
@@ -1141,9 +1163,10 @@ void DMA0_Channel6_IRQHandler(void) {
 }
 
 void TIMER0_UP_TIMER9_IRQHandler(void) {
-    timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
-    timer_flag_clear(TIMER0, TIMER_FLAG_UP);
-    // T3_DISABLE(); /* 不要在中断里进行这个操作，有难以预测的BUG */
+    T3_DISABLE();
+    T0_UP_FLAG_CLEAR();
+    // timer_interrupt_flag_clear(TIMER0, TIMER_INT_FLAG_UP);
+    // timer_flag_clear(TIMER0, TIMER_FLAG_UP);
 }
 
 void SPI0_IRQHandler(void) {
