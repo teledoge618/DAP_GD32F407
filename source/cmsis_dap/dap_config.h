@@ -7,7 +7,7 @@
 #define DAP_SWD_SUPPORT         1
 
 /* JTAG可用性(1=可用,0=不可用) */
-#define DAP_JTAG_SUPPORT        0
+#define DAP_JTAG_SUPPORT        1
 
 /* JTAG链上的最大设备数，1-255，数字越大占用内存越多 */
 #define DAP_JTAG_DEV_CNT        4
