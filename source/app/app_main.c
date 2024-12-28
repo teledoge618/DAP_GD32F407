@@ -37,17 +37,17 @@ int main() {
 
     APP_DAP_Init();
 
-#if 1
+#if 0
     DAP_Port_SWJ_Disconnect();
     DAP_Port_JTAG_Connect();
     DAP_Port_SWD_Sequence(51, sdo, sdi);
     sdo[0] = 0;
     DAP_Port_SWD_Sequence(8, sdo, sdi);
 
-    dap_data.jtag_dev.count = 1;                              /*  */
-    dap_data.jtag_dev.index = 0;                              /*  */
-    dap_data.jtag_dev.ir_before[dap_data.jtag_dev.index] = 0; /* 前 */
-    dap_data.jtag_dev.ir_after[dap_data.jtag_dev.index] = 0;  /* 后 */
+    dap_data.jtag_dev.count = 3;                              /*  */
+    dap_data.jtag_dev.index = 1;                              /*  */
+    dap_data.jtag_dev.ir_before[dap_data.jtag_dev.index] = 3; /* 前 */
+    dap_data.jtag_dev.ir_after[dap_data.jtag_dev.index] = 3;  /* 后 */
     dap_data.jtag_dev.ir_length[dap_data.jtag_dev.index] = 3; /*  */
 
     // DAP_Port_JTAG_IR(0x02);

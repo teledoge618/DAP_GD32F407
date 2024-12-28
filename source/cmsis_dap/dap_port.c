@@ -8,7 +8,8 @@
 extern dap_data_t dap_data;
 
 static uint32_t swj_timer0_cnt = 0xFFFFFFFF;
-static volatile uint8_t spi_rdata_buf[4] = {0};
+static volatile uint8_t spi0_data_buf[4] = {0};
+static volatile uint8_t spi2_data_buf[4] = {0};
 
 // clang-format off
 
@@ -66,6 +67,7 @@ static const uint8_t parity_mapping_table[256] = {
 #define SPI2_DISABLE() (BIT_BAND_PERIPH((SPI2 + 0x00), 6) = 0x00)
 #define SPI2_INT_RBNE_ENABLE() (BIT_BAND_PERIPH((SPI2 + 0x04), 6) = 0x01)
 #define SPI2_INT_RBNE_DISABLE() (BIT_BAND_PERIPH((SPI2 + 0x04), 6) = 0x00)
+#define SPI2_RBNE() BIT_BAND_PERIPH((SPI2 + 0x08), 0)
 
 /* SPI2 DMA */
 #define SPI2_DMA_TX_ENABLE() (BIT_BAND_PERIPH((SPI2 + 0x04), 1) = 0x01)
@@ -552,6 +554,11 @@ void DAP_Port_JTAG_Connect(void) {
         -PD6:  SPI2_MOSI  AF5  IN  SPI输入
     TDO_OEN:
         -PA2:  GPIO            OUT
+    TRST_CTL:
+        -PD14: GPIO            OUT
+    TRST_OEN:
+        -PB14: GPIO            OUT
+
     */
 
     /* TCK_CTL */
@@ -593,6 +600,12 @@ void DAP_Port_JTAG_Connect(void) {
 
     /* TDO_OEN 拉低 */
     gpio_bit_reset(GPIOA, GPIO_PIN_2);
+
+    /* TRST_CTL */
+    gpio_bit_set(GPIOD, GPIO_PIN_14);
+
+    /* TRST_OEN */
+    gpio_bit_set(GPIOB, GPIO_PIN_14);
 
     SPI0_DISABLE();
     SPI2_DISABLE();
@@ -734,6 +747,10 @@ void DAP_Port_SetPins(uint8_t select, uint8_t value) {
 
     if (select & (1 << DAP_SWJ_nRESET)) {
         gpio_bit_write(GPIOA, GPIO_PIN_0, (value >> DAP_SWJ_nRESET) & 0x01);
+    }
+
+    if (select & (1 << DAP_SWJ_nTRST)) {
+        gpio_bit_write(GPIOD, GPIO_PIN_14, (value >> DAP_SWJ_nTRST) & 0x01);
     }
 }
 
@@ -979,7 +996,7 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
             while (SPI0_RBNE()) {
             }
             SPI0_INT_RBNE_DISABLE();
-            dma_memory_address_config(DMA1, DMA_CH0, DMA_MEMORY_0, (uint32_t)spi_rdata_buf); /* RX */
+            dma_memory_address_config(DMA1, DMA_CH0, DMA_MEMORY_0, (uint32_t)spi0_data_buf); /* RX */
             dma_transfer_number_config(DMA1, DMA_CH0, 4);                                    /* SPI0 */
             DMA1_CH0_ENABLE();
             SPI0_DMA_RX_ENABLE(); /* RX */
@@ -1000,10 +1017,10 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
             }
 
             SPI0_DMA_RX_DISABLE();
-            response[0] = spi_rdata_buf[0];
-            response[1] = spi_rdata_buf[1];
-            response[2] = spi_rdata_buf[2];
-            response[3] = spi_rdata_buf[3];
+            response[0] = spi0_data_buf[0];
+            response[1] = spi0_data_buf[1];
+            response[2] = spi0_data_buf[2];
+            response[3] = spi0_data_buf[3];
         } else {
             SPI0_DMA_TX_DISABLE();
         }
@@ -1023,8 +1040,8 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         if (read_n_write) {
             /* 计算校验值 */
             uint8_t rdata_parity = 0x01 & spi_i2s_data_receive(SPI0);
-            uint8_t p = 0x01 & (parity_mapping_table[spi_rdata_buf[0]] + parity_mapping_table[spi_rdata_buf[1]]  //
-                                + parity_mapping_table[spi_rdata_buf[2]] + parity_mapping_table[spi_rdata_buf[3]]);
+            uint8_t p = 0x01 & (parity_mapping_table[spi0_data_buf[0]] + parity_mapping_table[spi0_data_buf[1]]  //
+                                + parity_mapping_table[spi0_data_buf[2]] + parity_mapping_table[spi0_data_buf[3]]);
 
             if (p != rdata_parity) {
                 ack = DAP_TRANSFER_ERROR; /* 校验值错误 */
@@ -1082,7 +1099,7 @@ void DAP_Port_JTAG_Sequence(uint8_t info, const uint8_t *request, uint8_t *respo
 
     bool need_receive = (info & JTAG_SEQUENCE_TDO) > 0;
 
-    SPI0_INT_RBNE_ENABLE();
+    SPI0_INT_RBNE_ENABLE(); /* TMS抛弃 */
     if (need_receive) {
         SPI2_INT_RBNE_DISABLE();
     } else {
@@ -1109,7 +1126,7 @@ void DAP_Port_JTAG_Sequence(uint8_t info, const uint8_t *request, uint8_t *respo
         tck_cycle_n(n_bit);
 
         if (need_receive) {
-            while (!SPI0_RBNE()) {
+            while (!SPI2_RBNE()) { /* 等TDO */
             }
             *response = spi_i2s_data_receive(SPI2); /* 接收 */
             response++;
@@ -1135,12 +1152,12 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
     SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
     SPI2_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
     spi_i2s_data_transmit(SPI0, B001); /* 1,0,0 */
-    tck_cycle_n(3);                    /* 不能多，多了就写进IR了 */
+    tck_cycle_n(3);                    /* 不能多，多了就错位了 */
     SPI0_DISABLE();
 
-    /* TDO <- 0 <- 1 <- TDI    */
+    /* TDO <- device[0] <- ... <- device[n] <- TDI */
 
-    /* 把数据从Bypass中推出来 */
+    /* 把数据从Bypass中推出来 ****************************************************/
     uint8_t bypass_num = dap_data.jtag_dev.index;
     if (bypass_num) {
         uint8_t i;
@@ -1164,7 +1181,8 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
         SPI2_DISABLE();
     }
 
-    /* 接收ACK并发送req */
+    /* 接收ACK并发送req *********************************************************/
+
     SPI0_ENABLE();
     SPI2_ENABLE();
     SPI2_INT_RBNE_DISABLE();
@@ -1178,12 +1196,12 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
     ack = ((ack & 0x01) << 1) | ((ack & 0x02) >> 1) | (ack & 0x04); /* 交换[0][1] */
     SPI2_INT_RBNE_ENABLE();
 
-#if 0
+#if 1
     if (ack != DAP_TRANSFER_OK) {
         SPI0_ENABLE();
         SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
         spi_i2s_data_transmit(SPI0, B011); /* 1,1,0 */
-        tck_cycle_n(3);                    /* 不能多，多了就写进IR了 */
+        tck_cycle_n(8);                    /* 不能多，多了就写进IR了 */
         SPI0_DISABLE();
 
         if (request & DAP_TRANSFER_TIMESTAMP) {
@@ -1216,6 +1234,8 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
 
         uint8_t n = dap_data.jtag_dev.count - dap_data.jtag_dev.index - 1U;
         if (n > 0) {
+            /* 发送数据 ********************************************************/
+
             spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
             spi_i2s_data_transmit(SPI2, 0xFF); /*  */
             tck_cycle_n(8);
@@ -1223,7 +1243,8 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
 
             SPI2_INT_RBNE_ENABLE();
 
-            /* 把数据推到合适的位置 */
+            /* 把数据推到合适的位置 **********************************************/
+
             while (n > 0) {
                 uint8_t i;
                 if (n > 8) {
@@ -1242,9 +1263,11 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
                 tck_cycle_n(i);
             }
         } else {
+            /* 发送数据并进入下一个状态 *******************************************/
+
             spi_i2s_data_transmit(SPI0, 0x01 << 7); /* Shift-DR -> Exit1-DR */
             spi_i2s_data_transmit(SPI2, 0xFF);      /*  */
-            tck_cycle_n(4);
+            tck_cycle_n(8);
             rwdata[3] = spi_i2s_data_receive(SPI2);
 
             SPI2_INT_RBNE_ENABLE();
@@ -1277,7 +1300,7 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
             spi_i2s_data_transmit(SPI2, rwdata[3]); /*  */
             tck_cycle_n(8);
 
-            /* 把数据推到合适的位置 */
+            /* 把数据推到合适的位置 **********************************************/
             while (n > 0) {
                 uint8_t i;
                 if (n > 8) {
@@ -1308,110 +1331,17 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
     /* 退出 ********************************************************************/
 
     SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();           /* 抛弃接收到的数据 */
-    spi_i2s_data_transmit(SPI0, B01); /* 1,0 */
-    tck_cycle_n(2);                   /* 不能多，多了就写进IR了 */
+    SPI0_INT_RBNE_ENABLE();                 /* 抛弃接收到的数据 */
+    spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    tck_cycle_n(8);                         /* 多几个bit也没问题 */
     SPI0_DISABLE();
+
+    if (request & DAP_TRANSFER_TIMESTAMP) {
+        dap_data.timestamp = DAP_Port_GetTimeStamp();
+    }
 
     return ack;
 }
-
-#if 0
-static uint8_t JTAG_Transfer(uint32_t request, uint32_t *data) {
-    uint32_t ack;
-    uint32_t bit;
-    uint32_t val;
-    uint32_t n;
-
-    PIN_TMS_SET();
-    JTAG_CYCLE_TCK(); /* Select-DR-Scan */
-    PIN_TMS_CLR();
-    JTAG_CYCLE_TCK(); /* Capture-DR */
-    JTAG_CYCLE_TCK(); /* Shift-DR */
-
-    for (n = DAP_Data.jtag_dev.index; n; n--) {
-        JTAG_CYCLE_TCK(); /* Bypass before data */
-    }
-
-    JTAG_CYCLE_TDIO(request >> 1, bit); /* Set RnW, Get ACK.0 */
-    ack = bit << 1;
-    JTAG_CYCLE_TDIO(request >> 2, bit); /* Set A2,  Get ACK.1 */
-    ack |= bit << 0;
-    JTAG_CYCLE_TDIO(request >> 3, bit); /* Set A3,  Get ACK.2 */
-    ack |= bit << 2;
-
-    if (ack != DAP_TRANSFER_OK) {
-        /* Exit on error */
-        PIN_TMS_SET();
-        JTAG_CYCLE_TCK(); /* Exit1-DR */
-        goto exit;
-    }
-
-    if (request & DAP_TRANSFER_RnW) {
-        /* Read Transfer */
-        val = 0U;
-        for (n = 31U; n; n--) {
-            JTAG_CYCLE_TDO(bit); /* Get D0..D30 */
-            val |= bit << 31;
-            val >>= 1;
-        }
-        n = DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U;
-        if (n) {
-            JTAG_CYCLE_TDO(bit); /* Get D31 */
-            for (--n; n; n--) {
-                JTAG_CYCLE_TCK(); /* Bypass after data */
-            }
-            PIN_TMS_SET();
-            JTAG_CYCLE_TCK(); /* Bypass & Exit1-DR */
-        } else {
-            PIN_TMS_SET();
-            JTAG_CYCLE_TDO(bit); /* Get D31 & Exit1-DR */
-        }
-        val |= bit << 31;
-        if (data) {
-            *data = val;
-        }
-    } else {
-        /* Write Transfer */
-        val = *data;
-        for (n = 31U; n; n--) {
-            JTAG_CYCLE_TDI(val); /* Set D0..D30 */
-            val >>= 1;
-        }
-        n = DAP_Data.jtag_dev.count - DAP_Data.jtag_dev.index - 1U;
-        if (n) {
-            JTAG_CYCLE_TDI(val); /* Set D31 */
-            for (--n; n; n--) {
-                JTAG_CYCLE_TCK(); /* Bypass after data */
-            }
-            PIN_TMS_SET();
-            JTAG_CYCLE_TCK(); /* Bypass & Exit1-DR */
-        } else {
-            PIN_TMS_SET();
-            JTAG_CYCLE_TDI(val); /* Set D31 & Exit1-DR */
-        }
-    }
-
-exit:
-    JTAG_CYCLE_TCK(); /* Update-DR */
-    PIN_TMS_CLR();
-    JTAG_CYCLE_TCK(); /* Idle */
-    PIN_TDI_OUT(1U);
-
-    /* Capture Timestamp */
-    if (request & DAP_TRANSFER_TIMESTAMP) {
-        DAP_Data.timestamp = TIMESTAMP_GET();
-    }
-
-    /* Idle cycles */
-    n = DAP_Data.transfer.idle_cycles;
-    while (n--) {
-        JTAG_CYCLE_TCK(); /* Idle */
-    }
-
-    return ((uint8_t)ack);
-}
-#endif
 
 /**
  * @brief 写JTAG IR寄存器
@@ -1539,8 +1469,76 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
  * @return uint32_t
  */
 uint32_t DAP_Port_JTAG_ReadIDCode(void) {
-    // TODO
-    return 0x12345678;
+    uint8_t idcode[4];
+
+    /* Run-Test/Idle -> Shift-IR **********************************************/
+
+    SPI0_ENABLE();
+    spi_i2s_data_transmit(SPI0, B001);
+    tck_cycle_n(3);
+    SPI0_DISABLE();
+
+    /* 把数据从Bypass中推出来 ****************************************************/
+    uint8_t bypass_num = dap_data.jtag_dev.index;
+    if (bypass_num) {
+        uint8_t i;
+
+        SPI0_ENABLE();
+        SPI2_ENABLE();
+        while (bypass_num) {
+            if (bypass_num > 8) {
+                i = 8;
+            } else {
+                i = bypass_num;
+            }
+            bypass_num -= i;
+
+            SPI0_INT_RBNE_ENABLE();
+            spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+            spi_i2s_data_transmit(SPI2, 0x00);
+            tck_cycle_n(i);
+        }
+        SPI0_DISABLE();
+        SPI2_DISABLE();
+    }
+
+    /* Shift-IR -> Exit1-DR ***************************************************/
+
+    SPI0_ENABLE();
+    SPI2_ENABLE();
+    SPI2_INT_RBNE_DISABLE();
+    spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, 0xFF);
+    tck_cycle_n(8);
+    idcode[0] = spi_i2s_data_receive(SPI2);
+
+    spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, 0xFF);
+    tck_cycle_n(8);
+    idcode[1] = spi_i2s_data_receive(SPI2);
+
+    spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, 0xFF);
+    tck_cycle_n(8);
+    idcode[2] = spi_i2s_data_receive(SPI2);
+
+    spi_i2s_data_transmit(SPI0, 1 << 7); /* Shift-DR -> Exit1-DR */
+    spi_i2s_data_transmit(SPI2, 0xFF);
+    tck_cycle_n(8);
+    idcode[3] = spi_i2s_data_receive(SPI2);
+
+    SPI2_INT_RBNE_ENABLE();
+    SPI0_DISABLE();
+    SPI2_DISABLE();
+
+    /* Exit1-DR -> Run-Test/Idle **********************************************/
+
+    SPI0_ENABLE();
+    spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    tck_cycle_n(8);                         /* 多发0也没关系 */
+    SPI0_DISABLE();
+
+    return (idcode[0]) | (idcode[1] << 8) | (idcode[2] << 16) | (idcode[3] << 24);
 }
 
 /**
@@ -1549,7 +1547,111 @@ uint32_t DAP_Port_JTAG_ReadIDCode(void) {
  * @param data
  */
 void DAP_Port_JTAG_WriteAbort(uint32_t data) {
-    // TODO
+    /* Run-Test/Idle -> Shift-DR **********************************************/
+
+    SPI0_ENABLE();
+    SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
+    SPI2_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
+    spi_i2s_data_transmit(SPI0, B001); /* 1,0,0 */
+    tck_cycle_n(3);                    /* 不能多，多了就错位了 */
+    SPI0_DISABLE();
+
+    /* TDO <- device[0] <- ... <- device[n] <- TDI */
+
+    /* 把数据从Bypass中推出来 ****************************************************/
+    uint8_t bypass_num = dap_data.jtag_dev.index;
+    if (bypass_num) {
+        uint8_t i;
+
+        SPI0_ENABLE();
+        SPI2_ENABLE();
+        while (bypass_num) {
+            if (bypass_num > 8) {
+                i = 8;
+            } else {
+                i = bypass_num;
+            }
+            bypass_num -= i;
+
+            SPI0_INT_RBNE_ENABLE();
+            spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+            spi_i2s_data_transmit(SPI2, 0x00);
+            tck_cycle_n(i);
+        }
+        SPI0_DISABLE();
+        SPI2_DISABLE();
+    }
+
+    /* 接收ACK并发送req *********************************************************/
+
+    SPI0_ENABLE();
+    SPI2_ENABLE();
+    SPI2_INT_RBNE_DISABLE();
+    spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, 0x00); /* 三个0 */
+    tck_cycle_n(3);
+    SPI0_DISABLE();
+    SPI2_DISABLE();
+
+    /* 写操作 **************************************************************/
+
+    SPI0_ENABLE();
+    SPI2_ENABLE();
+    SPI0_INT_RBNE_ENABLE();
+    SPI2_INT_RBNE_ENABLE();
+
+    spi_i2s_data_transmit(SPI0, 0x00);        /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, data & 0xFF); /*  */
+    tck_cycle_n(8);
+
+    spi_i2s_data_transmit(SPI0, 0x00);               /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, (data >> 8) & 0xFF); /*  */
+    tck_cycle_n(8);
+
+    spi_i2s_data_transmit(SPI0, 0x00);                /* Shift-DR */
+    spi_i2s_data_transmit(SPI2, (data >> 16) & 0xFF); /*  */
+    tck_cycle_n(8);
+
+    uint8_t n = dap_data.jtag_dev.count - dap_data.jtag_dev.index - 1U;
+    if (n > 0) {
+        spi_i2s_data_transmit(SPI0, 0x00);                /* Shift-DR */
+        spi_i2s_data_transmit(SPI2, (data >> 24) & 0xFF); /*  */
+        tck_cycle_n(8);
+
+        /* 把数据推到合适的位置 **********************************************/
+        while (n > 0) {
+            uint8_t i;
+            if (n > 8) {
+                i = 8;
+            } else {
+                i = n;
+            }
+            n -= i;
+
+            if (n) {
+                spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
+            } else {
+                spi_i2s_data_transmit(SPI0, 0x01 << (i - 1)); /* Shift-DR -> Exit1-DR */
+            }
+            spi_i2s_data_transmit(SPI2, 0xFF); /*  */
+            tck_cycle_n(i);
+        }
+    } else {
+        spi_i2s_data_transmit(SPI0, 0x01 << 7);           /* Shift-DR -> Exit1-DR */
+        spi_i2s_data_transmit(SPI2, (data >> 24) & 0xFF); /*  */
+        tck_cycle_n(8);
+    }
+
+    SPI0_DISABLE();
+    SPI2_DISABLE();
+
+    /* 退出 ********************************************************************/
+
+    SPI0_ENABLE();
+    SPI0_INT_RBNE_ENABLE();                 /* 抛弃接收到的数据 */
+    spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    tck_cycle_n(8);                         /* 多几个bit也没问题 */
+    SPI0_DISABLE();
 }
 
 /**
@@ -1591,10 +1693,10 @@ void TIMER0_UP_TIMER9_IRQHandler(void) {
 
 void SPI0_IRQHandler(void) {
     /* 自动接收数据，防止出现RXOVER影响数据接收 */
-    spi_rdata_buf[0] = spi_i2s_data_receive(SPI0);
+    spi0_data_buf[0] = spi_i2s_data_receive(SPI0);
 }
 
 void SPI2_IRQHandler(void) {
     /* 自动接收数据，防止出现RXOVER影响数据接收 */
-    spi_rdata_buf[0] = spi_i2s_data_receive(SPI2);
+    spi2_data_buf[0] = spi_i2s_data_receive(SPI2);
 }
