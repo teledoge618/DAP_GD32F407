@@ -203,6 +203,12 @@
 #define SWD_SEQUENCE_CLK                0x3FU   // SWCLK count
 #define SWD_SEQUENCE_DIN                0x80U   // SWDIO capture
 
+// SPI Sequence Info
+#define SPI_SEQUENCE_DIN                0x01U   // SWCLK count
+
+// I2C Sequence Info
+#define SWD_SEQUENCE_RnW                0x01U   // SWCLK count
+
 // clang-format on
 
 #endif  // !__DAP_DEF_H__

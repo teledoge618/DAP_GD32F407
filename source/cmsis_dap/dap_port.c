@@ -745,7 +745,7 @@ void DAP_Port_SetPins(uint8_t select, uint8_t value) {
     */
 
     if (select & (1 << DAP_SWJ_nRESET)) {
-        gpio_bit_write(GPIOA, GPIO_PIN_0, (value >> DAP_SWJ_nRESET) & 0x01);
+        gpio_bit_write(GPIOA, GPIO_PIN_0, !((value >> DAP_SWJ_nRESET) & 0x01));
     }
 
     if (select & (1 << DAP_SWJ_nTRST)) {
@@ -769,8 +769,12 @@ uint8_t DAP_Port_GetPins(void) {
     Bit 7: nRESET
     */
 
-    if (gpio_input_bit_get(GPIOA, GPIO_PIN_0)) {
+    if (!gpio_input_bit_get(GPIOA, GPIO_PIN_0)) {
         pins_value |= (1U << DAP_SWJ_nRESET);
+    }
+
+    if (!gpio_input_bit_get(GPIOD, GPIO_PIN_14)) {
+        pins_value |= (1U << DAP_SWJ_nTRST);
     }
 
     return pins_value;
@@ -786,30 +790,32 @@ void DAP_Port_SWJ_SetClock(uint32_t freq) {
         freq = DAP_DEFAULT_SWJ_CLOCK;
         return;
     }
-    if (freq > SystemCoreClock / 4) {
-        freq = SystemCoreClock / 4; /* 上限SYS/4 */
+    if (freq > SystemCoreClock / 4) { /* 上限SYS/4 */
+        freq = SystemCoreClock / 4;
     }
-    if (freq < 40 * 1000) { /* 下限40K */
-        if (freq < 10) {
-            freq = 10;
-        }
+    if (freq < (SystemCoreClock / (65535 / 9)) / 1000) { /* 下限 */
+        freq = SystemCoreClock / (65535 / 9) / 1000;
     }
+    dap_data.frequency = freq;
+    ULOG_DEBUG("dap freq: %d Hz\r\n", freq);
 
     /* 计算每个周期的计数值 */
     uint32_t timer0_period = SystemCoreClock / freq;
 
-    if (timer0_period > 4000) {
-        uint32_t timer_psc = timer0_period / 4000;
+    if (timer0_period > 7000) { /* 7000 * 9 = 63000 < 65535 */
+        uint32_t timer_psc = timer0_period / 1000;
         timer_prescaler_config(TIMER0, timer_psc - 1, TIMER_PSC_RELOAD_NOW);
         timer_prescaler_config(TIMER3, timer_psc - 1, TIMER_PSC_RELOAD_NOW);
 
         timer0_period /= timer_psc;
+        if (timer0_period > 7000) {
+            timer0_period = 7000;
+            ULOG_ERROR("dap freq error\r\n");
+        }
     } else {
         timer_prescaler_config(TIMER0, 0, TIMER_PSC_RELOAD_NOW);
         timer_prescaler_config(TIMER3, 0, TIMER_PSC_RELOAD_NOW);
     }
-    dap_data.frequency = freq;
-    ULOG_DEBUG("dap freq: %d Hz\r\n", freq);
 
     /* 设置TIMER0的计数值和比较值 */
     timer_autoreload_value_config(TIMER0, timer0_period - 1U);
