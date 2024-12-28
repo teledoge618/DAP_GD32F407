@@ -514,7 +514,7 @@ void DAP_Port_SWD_Connect(void) {
     TmsAfMode(1);
 
     /* TMS_OEN */
-    TmsOen(1);
+    TMS_OEN_DO() = 1;
     TmsOenAfMode(0);
 
     SPI0_DISABLE();
@@ -581,10 +581,9 @@ void DAP_Port_JTAG_Connect(void) {
 
     /* TMS_CTL TMS_ERT */
     TmsAfMode(1);
-    TmsWrite(0);
 
     /* TMS_OEN */
-    TmsOen(1);
+    TMS_OEN_DO() = 1;
     TmsOenAfMode(0);
 
     /* TDI_CTL 切到SPI2输出 */
@@ -836,8 +835,6 @@ void DAP_Port_SWJ_Sequence(uint32_t count, uint8_t *value) {
         count = 256;
     }
 
-    TMS_OEN_DO() = 1;       /* 输出 */
-    SPI0_INT_RBNE_ENABLE(); /* 抛弃收到的数据 */
     SPI0_ENABLE();
 
     while (count > 0) {
@@ -871,14 +868,12 @@ void DAP_Port_SWD_Sequence(uint8_t info, const uint8_t *request, uint8_t *respon
 
     /* 需要捕获输入值 */
     uint8_t need_receive = ((info & SWD_SEQUENCE_DIN) > 0);
-    TMS_OEN_DO() = !need_receive;
+    TMS_OEN_DO() = !need_receive; /* 传输方向 */
 
     if (need_receive) {
         while (SPI0_RBNE()) {
         }
         SPI0_INT_RBNE_DISABLE();
-    } else {
-        SPI0_INT_RBNE_ENABLE(); /* 抛弃 */
     }
 
     SPI0_ENABLE();
@@ -902,12 +897,14 @@ void DAP_Port_SWD_Sequence(uint8_t info, const uint8_t *request, uint8_t *respon
         tck_cycle_n(n_bit);
 
         if (need_receive) {
+            while (!SPI0_RBNE()) {
+            }
             *response = spi_i2s_data_receive(SPI0); /* 输入 */
             response++;
         }
     }
 
-    SPI0_INT_RBNE_ENABLE();
+    SPI0_INT_RBNE_ENABLE(); /* 抛弃 */
     SPI0_DISABLE();
     TMS_OEN_DO() = 1;
 }
@@ -928,12 +925,9 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
 
     /* 发request **************************************************************/
 
-    TMS_OEN_DO() = 1;       /* 输出 */
-    SPI0_INT_RBNE_ENABLE(); /* 抛弃接收的数据 */
     SPI0_ENABLE();
     spi_i2s_data_transmit(SPI0, req);
     tck_cycle_n(8);
-    // SPI0_DISABLE();
 
     /* 收ACK ******************************************************************/
 
@@ -945,7 +939,9 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
             ULOG_ERROR("ACK over length\r\n");
             return DAP_TRANSFER_ERROR; /* 不支持 */
         }
+        SPI0_DISABLE();
         spi_i2s_data_frame_format_config(SPI0, SPI_FRAMESIZE_16BIT);
+        SPI0_ENABLE();
     }
 
     TMS_OEN_DO() = 0; /* 输入 */
@@ -953,7 +949,6 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     }
     SPI0_INT_RBNE_DISABLE(); /* 手动接收 */
 
-    // SPI0_ENABLE();
     if (ack_cycle > 8) {
         tck_cycle_n(8);
         tck_cycle_n(ack_cycle - 8);
@@ -961,15 +956,18 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         tck_cycle_n(ack_cycle);
     }
 
+    while (!SPI0_RBNE()) {
+    }
     uint16_t ack_raw = spi_i2s_data_receive(SPI0);
     uint8_t ack = 0x07 & (ack_raw >> dap_data.swd_conf.turnaround); /* 去掉trn */
 
-    SPI0_INT_RBNE_ENABLE();
-    SPI0_DISABLE();
+    SPI0_INT_RBNE_ENABLE(); /* 抛弃 */
 
     /* 恢复8bit长度 */
     if (ack_cycle > 8U) {
+        SPI0_DISABLE();
         spi_i2s_data_frame_format_config(SPI0, SPI_FRAMESIZE_8BIT);
+        SPI0_ENABLE();
     }
 
     uint8_t need_data_phase = 1; /* 需要生成数据序列 */
@@ -1009,7 +1007,6 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
             SPI0_DMA_TX_ENABLE(); /* TX */
         }
 
-        SPI0_ENABLE();
         tck_cycle_byte(4); /* 4*8=32 */
 
         if (read_n_write) {
@@ -1026,11 +1023,9 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         }
 
         SPI0_INT_RBNE_ENABLE();
-        SPI0_DISABLE();
 
         /* 1bit校验位 和 可能的转换位 *******************/
 
-        SPI0_ENABLE();
         while (SPI0_RBNE()) {
         }
         SPI0_INT_RBNE_DISABLE();
@@ -1038,6 +1033,8 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         tck_cycle_n(dap_data.swd_conf.turnaround * read_n_write + 1U);
 
         if (read_n_write) {
+            while (!SPI0_RBNE()) { /* 等数据 */
+            }
             /* 计算校验值 */
             uint8_t rdata_parity = 0x01 & spi_i2s_data_receive(SPI0);
             uint8_t p = 0x01 & (parity_mapping_table[spi0_data_buf[0]] + parity_mapping_table[spi0_data_buf[1]]  //
@@ -1050,13 +1047,11 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
         }
 
         SPI0_INT_RBNE_ENABLE();
-        SPI0_DISABLE();
         TMS_OEN_DO() = 1; /* 恢复控制权 */
 
         /* 写指令后需要添加空闲周期 */
         uint8_t idle_count = dap_data.transfer.idle_cycles;
         if ((!read_n_write) && (idle_count > 0)) {
-            SPI0_ENABLE();
             spi_i2s_data_transmit(SPI0, 0x00);
             while (idle_count > 0) {
                 uint8_t idle_bit;
@@ -1068,7 +1063,6 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
                 idle_count -= idle_bit;
                 tck_cycle_n(idle_bit);
             }
-            SPI0_DISABLE();
         }
     } else {
         if (read_n_write) {
@@ -1078,6 +1072,7 @@ uint8_t DAP_Port_SWD_Transfer(uint32_t request, uint8_t *response) {
     }
 
     TMS_OEN_DO() = 1; /* 输出 */
+    SPI0_DISABLE();
     return ack;
 }
 
@@ -1099,7 +1094,6 @@ void DAP_Port_JTAG_Sequence(uint8_t info, const uint8_t *request, uint8_t *respo
 
     bool need_receive = (info & JTAG_SEQUENCE_TDO) > 0;
 
-    SPI0_INT_RBNE_ENABLE(); /* TMS抛弃 */
     if (need_receive) {
         SPI2_INT_RBNE_DISABLE();
     } else {
@@ -1149,11 +1143,10 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
     /* Run-Test/Idle -> Shift-DR **********************************************/
 
     SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
-    SPI2_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
+    SPI2_ENABLE();
     spi_i2s_data_transmit(SPI0, B001); /* 1,0,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF); /* 无所谓 */
     tck_cycle_n(3);                    /* 不能多，多了就错位了 */
-    SPI0_DISABLE();
 
     /* TDO <- device[0] <- ... <- device[n] <- TDI */
 
@@ -1162,8 +1155,6 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
     if (bypass_num) {
         uint8_t i;
 
-        SPI0_ENABLE();
-        SPI2_ENABLE();
         while (bypass_num) {
             if (bypass_num > 8) {
                 i = 8;
@@ -1172,37 +1163,31 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
             }
             bypass_num -= i;
 
-            SPI0_INT_RBNE_ENABLE();
             spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
-            spi_i2s_data_transmit(SPI2, 0x00);
+            spi_i2s_data_transmit(SPI2, 0xFF); /* 无所谓 */
             tck_cycle_n(i);
         }
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     }
 
     /* 接收ACK并发送req *********************************************************/
 
-    SPI0_ENABLE();
-    SPI2_ENABLE();
-    SPI2_INT_RBNE_DISABLE();
+    SPI2_INT_RBNE_DISABLE();                   /* 手动接收 */
     spi_i2s_data_transmit(SPI0, 0x00);         /* Shift-DR */
     spi_i2s_data_transmit(SPI2, request >> 1); /* REQ */
     tck_cycle_n(3);
-    SPI0_DISABLE();
-    SPI2_DISABLE();
 
+    while (!SPI2_RBNE()) { /* 等数据 */
+    }
     uint8_t ack = spi_i2s_data_receive(SPI2) & 0x07;
     ack = ((ack & 0x01) << 1) | ((ack & 0x02) >> 1) | (ack & 0x04); /* 交换[0][1] */
     SPI2_INT_RBNE_ENABLE();
 
-#if 1
     if (ack != DAP_TRANSFER_OK) {
-        SPI0_ENABLE();
-        SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
         spi_i2s_data_transmit(SPI0, B011); /* 1,1,0 */
-        tck_cycle_n(8);                    /* 不能多，多了就写进IR了 */
+        spi_i2s_data_transmit(SPI2, 0xFF); /* 无所谓 */
+        tck_cycle_n(8);                    /* 多了无所谓 */
         SPI0_DISABLE();
+        SPI2_DISABLE();
 
         if (request & DAP_TRANSFER_TIMESTAMP) {
             dap_data.timestamp = DAP_Port_GetTimeStamp();
@@ -1210,26 +1195,30 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
 
         return ack;
     }
-#endif
+
     if (request & DAP_TRANSFER_RnW) {
         /* 读操作 **************************************************************/
 
-        SPI0_ENABLE();
-        SPI2_ENABLE();
         SPI2_INT_RBNE_DISABLE();
         spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
         spi_i2s_data_transmit(SPI2, 0xFF); /*  */
         tck_cycle_n(8);
+        while (!SPI2_RBNE()) {
+        }
         rwdata[0] = spi_i2s_data_receive(SPI2);
 
         spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
         spi_i2s_data_transmit(SPI2, 0xFF); /*  */
         tck_cycle_n(8);
+        while (!SPI2_RBNE()) {
+        }
         rwdata[1] = spi_i2s_data_receive(SPI2);
 
         spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
         spi_i2s_data_transmit(SPI2, 0xFF); /*  */
         tck_cycle_n(8);
+        while (!SPI2_RBNE()) {
+        }
         rwdata[2] = spi_i2s_data_receive(SPI2);
 
         uint8_t n = dap_data.jtag_dev.count - dap_data.jtag_dev.index - 1U;
@@ -1239,6 +1228,8 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
             spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
             spi_i2s_data_transmit(SPI2, 0xFF); /*  */
             tck_cycle_n(8);
+            while (!SPI2_RBNE()) {
+            }
             rwdata[3] = spi_i2s_data_receive(SPI2);
 
             SPI2_INT_RBNE_ENABLE();
@@ -1268,19 +1259,14 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
             spi_i2s_data_transmit(SPI0, 0x01 << 7); /* Shift-DR -> Exit1-DR */
             spi_i2s_data_transmit(SPI2, 0xFF);      /*  */
             tck_cycle_n(8);
+            while (!SPI2_RBNE()) {
+            }
             rwdata[3] = spi_i2s_data_receive(SPI2);
 
             SPI2_INT_RBNE_ENABLE();
         }
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     } else {
         /* 写操作 **************************************************************/
-
-        SPI0_ENABLE();
-        SPI2_ENABLE();
-        SPI0_INT_RBNE_ENABLE();
-        SPI2_INT_RBNE_ENABLE();
 
         spi_i2s_data_transmit(SPI0, 0x00);      /* Shift-DR */
         spi_i2s_data_transmit(SPI2, rwdata[0]); /*  */
@@ -1323,18 +1309,15 @@ uint8_t DAP_Port_JTAG_Transfer(uint32_t request, uint8_t *rwdata) {
             spi_i2s_data_transmit(SPI2, rwdata[3]); /*  */
             tck_cycle_n(8);
         }
-
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     }
 
     /* 退出 ********************************************************************/
 
-    SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();                 /* 抛弃接收到的数据 */
     spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF);      /* 无所谓 */
     tck_cycle_n(8);                         /* 多几个bit也没问题 */
     SPI0_DISABLE();
+    SPI2_DISABLE();
 
     if (request & DAP_TRANSFER_TIMESTAMP) {
         dap_data.timestamp = DAP_Port_GetTimeStamp();
@@ -1356,10 +1339,10 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
     /* Run-Test/Idle -> Shift-IR **********************************************/
 
     SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();             /* 抛弃接收到的数据 */
+    SPI2_ENABLE();
     spi_i2s_data_transmit(SPI0, B0011); /* 1,1,0,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF);  /* 无所谓 */
     tck_cycle_n(4);                     /* 不能多，多了就写进IR了 */
-    SPI0_DISABLE();
 
     /* Shift-IR -> Exit1-IR ***************************************************/
 
@@ -1373,13 +1356,9 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
         }
         ir_len_befor -= n_bit; /* 剩余 */
 
-        SPI0_ENABLE();
-        SPI2_ENABLE();
         spi_i2s_data_transmit(SPI0, 0x00); /* 保持Shift-IR */
         spi_i2s_data_transmit(SPI2, 0xFF); /* 填充Bypass */
         tck_cycle_n(n_bit);
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     }
 
     /* 写IR，最后1bit需要同时拉高TMS，进Exit1-IR */
@@ -1394,13 +1373,10 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
             }
             ir_len_now -= n_bit; /* 剩余 */
 
-            SPI0_ENABLE();
-            SPI2_ENABLE();
             spi_i2s_data_transmit(SPI0, 0x00);      /* 保持Shift-IR */
             spi_i2s_data_transmit(SPI2, ir & 0xFF); /* IR */
             tck_cycle_n(n_bit);
-            SPI0_DISABLE();
-            SPI2_DISABLE();
+
             ir = (ir >> n_bit);
         }
 
@@ -1414,8 +1390,6 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
             }
             ir_len_after -= n_bit; /* 剩余 */
 
-            SPI0_ENABLE();
-            SPI2_ENABLE();
             if (ir_len_after) {
                 spi_i2s_data_transmit(SPI0, 0x00); /* 保持Shift-IR */
             } else {
@@ -1423,8 +1397,6 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
             }
             spi_i2s_data_transmit(SPI2, 0xFF); /* Bypass */
             tck_cycle_n(n_bit);
-            SPI0_DISABLE();
-            SPI2_DISABLE();
         }
     } else {
         /* 写IR，最后1bit拉高TMS */
@@ -1437,8 +1409,6 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
             }
             ir_len_now -= n_bit; /* 剩余 */
 
-            SPI0_ENABLE();
-            SPI2_ENABLE();
             if (ir_len_now) {
                 spi_i2s_data_transmit(SPI0, 0x00); /* 保持Shift-IR */
             } else {
@@ -1446,8 +1416,6 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
             }
             spi_i2s_data_transmit(SPI2, ir & 0xFF);
             tck_cycle_n(n_bit);
-            SPI0_DISABLE();
-            SPI2_DISABLE();
 
             if (ir_len_now) {
                 ir = (ir >> n_bit);
@@ -1457,10 +1425,11 @@ void DAP_Port_JTAG_IR(uint32_t ir) {
 
     /* Exit1-IR -> Run-Test/Idle **********************************************/
 
-    SPI0_ENABLE();
     spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF);      /* 无所谓 */
     tck_cycle_n(8);                         /* 多发0也没关系 */
     SPI0_DISABLE();
+    SPI2_DISABLE();
 }
 
 /**
@@ -1474,17 +1443,16 @@ uint32_t DAP_Port_JTAG_ReadIDCode(void) {
     /* Run-Test/Idle -> Shift-IR **********************************************/
 
     SPI0_ENABLE();
+    SPI2_ENABLE();
     spi_i2s_data_transmit(SPI0, B001);
+    spi_i2s_data_transmit(SPI2, 0xFF);
     tck_cycle_n(3);
-    SPI0_DISABLE();
 
     /* 把数据从Bypass中推出来 ****************************************************/
     uint8_t bypass_num = dap_data.jtag_dev.index;
     if (bypass_num) {
         uint8_t i;
 
-        SPI0_ENABLE();
-        SPI2_ENABLE();
         while (bypass_num) {
             if (bypass_num > 8) {
                 i = 8;
@@ -1493,50 +1461,53 @@ uint32_t DAP_Port_JTAG_ReadIDCode(void) {
             }
             bypass_num -= i;
 
-            SPI0_INT_RBNE_ENABLE();
             spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
-            spi_i2s_data_transmit(SPI2, 0x00);
+            spi_i2s_data_transmit(SPI2, 0xFF);
             tck_cycle_n(i);
         }
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     }
 
     /* Shift-IR -> Exit1-DR ***************************************************/
 
-    SPI0_ENABLE();
-    SPI2_ENABLE();
-    SPI2_INT_RBNE_DISABLE();
+    SPI2_INT_RBNE_DISABLE(); /* 手动接收 */
+
     spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
     spi_i2s_data_transmit(SPI2, 0xFF);
     tck_cycle_n(8);
+    while (!SPI2_RBNE()) {
+    }
     idcode[0] = spi_i2s_data_receive(SPI2);
 
     spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
     spi_i2s_data_transmit(SPI2, 0xFF);
     tck_cycle_n(8);
+    while (!SPI2_RBNE()) {
+    }
     idcode[1] = spi_i2s_data_receive(SPI2);
 
     spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
     spi_i2s_data_transmit(SPI2, 0xFF);
     tck_cycle_n(8);
+    while (!SPI2_RBNE()) {
+    }
     idcode[2] = spi_i2s_data_receive(SPI2);
 
     spi_i2s_data_transmit(SPI0, 1 << 7); /* Shift-DR -> Exit1-DR */
     spi_i2s_data_transmit(SPI2, 0xFF);
     tck_cycle_n(8);
+    while (!SPI2_RBNE()) {
+    }
     idcode[3] = spi_i2s_data_receive(SPI2);
 
     SPI2_INT_RBNE_ENABLE();
-    SPI0_DISABLE();
-    SPI2_DISABLE();
 
     /* Exit1-DR -> Run-Test/Idle **********************************************/
 
-    SPI0_ENABLE();
     spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF);      /* 无所谓 */
     tck_cycle_n(8);                         /* 多发0也没关系 */
     SPI0_DISABLE();
+    SPI2_DISABLE();
 
     return (idcode[0]) | (idcode[1] << 8) | (idcode[2] << 16) | (idcode[3] << 24);
 }
@@ -1550,11 +1521,10 @@ void DAP_Port_JTAG_WriteAbort(uint32_t data) {
     /* Run-Test/Idle -> Shift-DR **********************************************/
 
     SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
-    SPI2_INT_RBNE_ENABLE();            /* 抛弃接收到的数据 */
+    SPI2_ENABLE();
     spi_i2s_data_transmit(SPI0, B001); /* 1,0,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF); /* 无所谓 */
     tck_cycle_n(3);                    /* 不能多，多了就错位了 */
-    SPI0_DISABLE();
 
     /* TDO <- device[0] <- ... <- device[n] <- TDI */
 
@@ -1563,8 +1533,6 @@ void DAP_Port_JTAG_WriteAbort(uint32_t data) {
     if (bypass_num) {
         uint8_t i;
 
-        SPI0_ENABLE();
-        SPI2_ENABLE();
         while (bypass_num) {
             if (bypass_num > 8) {
                 i = 8;
@@ -1575,30 +1543,18 @@ void DAP_Port_JTAG_WriteAbort(uint32_t data) {
 
             SPI0_INT_RBNE_ENABLE();
             spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
-            spi_i2s_data_transmit(SPI2, 0x00);
+            spi_i2s_data_transmit(SPI2, 0xFF);
             tck_cycle_n(i);
         }
-        SPI0_DISABLE();
-        SPI2_DISABLE();
     }
 
-    /* 接收ACK并发送req *********************************************************/
+    /* 发送req *********************************************************/
 
-    SPI0_ENABLE();
-    SPI2_ENABLE();
-    SPI2_INT_RBNE_DISABLE();
     spi_i2s_data_transmit(SPI0, 0x00); /* Shift-DR */
     spi_i2s_data_transmit(SPI2, 0x00); /* 三个0 */
     tck_cycle_n(3);
-    SPI0_DISABLE();
-    SPI2_DISABLE();
 
     /* 写操作 **************************************************************/
-
-    SPI0_ENABLE();
-    SPI2_ENABLE();
-    SPI0_INT_RBNE_ENABLE();
-    SPI2_INT_RBNE_ENABLE();
 
     spi_i2s_data_transmit(SPI0, 0x00);        /* Shift-DR */
     spi_i2s_data_transmit(SPI2, data & 0xFF); /*  */
@@ -1642,16 +1598,13 @@ void DAP_Port_JTAG_WriteAbort(uint32_t data) {
         tck_cycle_n(8);
     }
 
-    SPI0_DISABLE();
-    SPI2_DISABLE();
-
     /* 退出 ********************************************************************/
 
-    SPI0_ENABLE();
-    SPI0_INT_RBNE_ENABLE();                 /* 抛弃接收到的数据 */
     spi_i2s_data_transmit(SPI0, B00000001); /* 1,0 */
+    spi_i2s_data_transmit(SPI2, 0xFF);      /* 无所谓 */
     tck_cycle_n(8);                         /* 多几个bit也没问题 */
     SPI0_DISABLE();
+    SPI2_DISABLE();
 }
 
 /**
